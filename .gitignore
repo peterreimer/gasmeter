@@ -1,0 +1,8 @@
+*.pyc
+config.ini
+nohup.out
+venv/
+log/
+dist/
+build/
+*.egg-info
