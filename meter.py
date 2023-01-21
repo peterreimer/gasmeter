@@ -73,7 +73,7 @@ def run():
 
     logger.setLevel(logging.DEBUG)
     console = logging.StreamHandler()
-    formatter = logging.Formatter('%(levelname)s: %(message)s')
+    formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
     console.setFormatter(formatter)
     logger.addHandler(console)
 
@@ -147,6 +147,7 @@ def run():
         else:
             logger.info(f"Failed to send message to topic {topic}")
         client.disconnect()
+        logger.info("Disonnected from MQTT Broker!")
 
     while True:
         reed.when_pressed = closed

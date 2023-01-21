@@ -1,3 +1,7 @@
+[app]
+impulse = 0.01
+gpio = 27
+
 [mqtt]
 broker = '127.0.0.1'
 port = 1883
