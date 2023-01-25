@@ -2,9 +2,10 @@
 
 Using a rasperrypi  and a reed contact to log the gas consumption.
 
-     $ python3 -m venv  --system-site-packages  ./venv
-     $ venv/bin/pip install -r requirements.txt
-
+```bash
+$ python3 -m venv  --system-site-packages  ./venv
+$ venv/bin/pip install -r requirements.txt
+```
 Configuration:
 ```bash
 $ cp config.ini.example config.ini

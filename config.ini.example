@@ -1,10 +1,21 @@
 [app]
-impulse = 0.01
 gpio = 27
+impulse = 0.01
 
 [mqtt]
-broker = '127.0.0.1'
+id = raspi
+name = raspi with several sensors
+homieversion = 4.0
+broker = localhost
 port = 1883
-topic = "foo/bar"
-username = 'user1'
-password = 'secret'
+# exposed nodes, separated by ","" for multiple ones
+nodes = reed
+username = mosqitto
+password = *****
+insecure = True
+qos = 1
+retain_message = True
+# Retry to connect to mqtt broker
+mqttretry = 5
+# how often should be a publish to MQTT (in Seconds)
+publishtime = 120

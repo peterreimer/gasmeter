@@ -1,26 +1,63 @@
 #!/bin/env python3
-import argparse
+# -*- coding: utf-8 -*-
+# import argparse
 import configparser
-import csv
 import json
 import logging
-import os
 import random
 import time
-import sys
-from datetime import datetime
 
 from gpiozero import Button
 from paho.mqtt import client as mqtt_client
 
 logger = logging.getLogger(__name__)
 
-LOG_DIR = "log"
+# Setting up Logging
+logger.setLevel(logging.DEBUG)
+console = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
+console.setFormatter(formatter)
+logger.addHandler(console)
+
+
 IMP = 0.01
 latest = "gas.json"
 
+
 # generate client ID with pub prefix randomly
 client_id = f'python-mqtt-{random.randint(0, 1000)}'
+
+config_file = "config.ini"
+config = configparser.ConfigParser()
+config.read(config_file)
+
+app = config['app']
+gpio = app.getint('gpio', '')
+logger.info(f"GPIO {gpio}")
+
+# get MQTT settings
+mqtt = config['mqtt']
+broker = mqtt.get('broker', '127.0.0.1')
+port = mqtt.getint('port', 1883)
+id = mqtt.get('id', '')
+name = mqtt.get('name', '')
+nodes = mqtt.get('nodes', '')
+username = mqtt.get('username', '')
+password = mqtt.get('password', '')
+insecure = mqtt.getboolean('insecure', True)
+qos = mqtt.getint('qos', 0)
+retain_message = mqtt.getboolean('retain_message', True)
+mqttretry = mqtt.getint('mqttretry', 2)
+publishtime = mqtt.getint('publishtime', 600)
+homieversion = mqtt.get('homieversion', 4.0)
+
+# GPIO
+gpio = app.getint('gpio', '')
+reed = Button(gpio)
+
+# we only have on node, thus it is identical to nodes
+node = "reed"
+properties = "counter"
 
 
 def read_latest():
@@ -32,127 +69,115 @@ def read_latest():
         return data['volume']
     except:
         return 0
-
-    
+  
 
 def write_latest(log):
     """Save latest value to json file"""
-    f = open(latest,"w")
+    f = open(latest, "w")
     f.write(log)
     f.close()
 
-def log_to_csv(values):
-    """Create an CSV Logfile per day for logging the reading of the gasmeter"""
 
-    dateobj = datetime.fromisoformat(values["date"])
-    year = dateobj.strftime("%Y")
-    month = dateobj.strftime("%m")
-    day = dateobj.strftime("%d")
-
-    csv_daily = "%s%s%s.csv" % (year, month, day)
-    data_dir = os.path.join(LOG_DIR, year, month)
-
-    if not os.path.isdir(data_dir):
-        os.makedirs(data_dir)
-    csv_file = os.path.join(data_dir, csv_daily)
-    # add header only when we start a new file on new day
-    add_header = False
-    if not os.path.isfile(csv_file):
-        add_header = True
-    
-    with open(csv_file, 'a', newline='') as csvfile:
-        fieldnames = values.keys()
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        if add_header is True:
-            writer.writeheader()
-        writer.writerow(values)
+def publish(topic, payload):
+    client.publish("homie/" + id + "/" + topic, payload, qos, retain_message)
 
 
-
-def run():
-
-    logger.setLevel(logging.DEBUG)
-    console = logging.StreamHandler()
-    formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
-    console.setFormatter(formatter)
-    logger.addHandler(console)
-
-    parser = argparse.ArgumentParser(description='Reading and logging a gasmeter')
-    parser.add_argument('-c', '--conf', help='Configuration file', required=True)
-
-    args = parser.parse_args()
-    config_file = args.conf
-
-    config = configparser.ConfigParser()
-
-    if os.path.isfile(config_file):
-        config.read(config_file)
-        # get gasmeter properties
-        app = config['app']
-        impulse = app.getfloat('impulse', 0.1)
-
-        # get MQTT settings
-        mqtt = config['mqtt']
-        broker = mqtt.get('broker', '127.0.0.1')
-        port = mqtt.getint('port', 1883)
-        topic = mqtt.get('topic', '')
-        username = mqtt.get('username', '')
-        password = mqtt.get('password', '')
-
-        # gpio
-        gpio = app.getint('gpio', '')
-        reed = Button(gpio)
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        logger.info(f"MQTT Connection established, returned code={rc}")
+        logger.info(f"Publishing every {publishtime} s")
     else:
-        print(f"{config_file} does not exist")
-        sys.exit()
+        logger.warning(f"MQTT Connection failed, returned code={rc}")
+
+    # homie client config
+    publish("$state", "init")
+    publish("$homie", homieversion)
+    publish("$name", name)
+    publish("$nodes", nodes)
+    # homie node config
+    publish('/'.join([node, "$name"]), "Reed contact")
+    publish('/'.join([node, "$properties"]), properties)
+    publish('/'.join([node, "counter", "$name"]), "Counter Reading")
+    publish('/'.join([node, "counter", "$unit"]), "m³")
+    publish('/'.join([node, "counter", "$datatype"]), "float")
+    publish('/'.join([node, "counter", "$settable"]), "true")
+    # homie state ready
+    publish("$state", "ready")
 
 
+def on_disconnect(client, userdata, rc):
+    logger.info(f"MQTT Connection disconnected, Returned code={rc}")
 
-    logger.info(f"using MQTT broker at {broker}:{port}")
 
-    def connect_mqtt():
-        def on_connect(client, userdata, flags, rc):
-            if rc == 0:
-                logger.info("Connected to MQTT Broker!")
-            else:
-                logger.warn(f"Failed to connect, return code {rc}", rc)
+def sensorpublish():
+    publish(node + "/counter", "{:.1f}".format(counter))
+  
 
+# MQTT Connection
+mqttattempts = 0
+while mqttattempts < mqttretry:
+    try:
         client = mqtt_client.Client(client_id)
         client.username_pw_set(username, password)
-        client.on_connect = on_connect
+        # client.tls_set(cert_reqs=ssl.CERT_NONE) #no client certificate needed
+        # client.tls_insecure_set(insecure)
+        client.will_set('/'.join(["homie", id, "$state"]), "lost", qos, retain_message)
         client.connect(broker, port)
-        return client
-
-    def closed():
-        """Increase the consumption value for each closing of the reed contact"""
-        latest__measurement = read_latest()
-        latest__measurement += 1 * IMP
-        date = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        consumption = round(latest__measurement,3)
-        measurement = {"date": date, "volume": consumption}
-        log_to_csv(measurement)
-        log = json.dumps(measurement)
-        
-        write_latest(log)
-
-        # publish to MQTT Broker
-        client = connect_mqtt()
         client.loop_start()
-        result = client.publish(topic, log)
-        # result: [0, 1]
-        status = result[0]
-        logger.debug(status)
-        if status == 0:
-            logger.info(f"Send `{log}` to topic `{topic}`")
-        else:
-            logger.info(f"Failed to send message to topic {topic}")
-        client.disconnect()
-        logger.info("Disonnected from MQTT Broker!")
+        mqttattempts = mqttretry
+    except:
+        wait = 5
+        logger.info(f"Could not establish MQTT Connection! Try again {mqttretry - mqttattempts}x times after {wait}s")
+        mqttattempts += 1
+        if mqttattempts == mqttretry:
+            logger.info("Could not connect to MQTT Broker! exit...")
+            exit(0)
+        time.sleep(wait)
 
-    while True:
+# Tell systemd that our service is ready
+# systemd.daemon.notify('READY=1')
+
+client.on_connect = on_connect
+client.on_disconnect = on_disconnect
+
+
+def closed():
+    """Increase the consumption value for each closing of the reed contact"""
+
+    latest_measurement = read_latest()
+    latest_measurement += 1 * 0.01
+    consumption = round(latest_measurement, 3)
+
+    measurement = {"volume": consumption}
+    
+    log = json.dumps(measurement)
+    write_latest(log)
+
+    publish(node + "/counter", "{:.2f}".format(consumption))
+    logger.info(consumption)
+
+# finaly the loop
+while True:
+    try:
         reed.when_pressed = closed
         time.sleep(0.1)
+    except KeyboardInterrupt:
+        logger.info("Goodbye!")
+        # At least close MQTT Connection
+        publish("$state", "disconnected")
+        time.sleep(1)
+        client.disconnect()
+        client.loop_stop()
+        exit(0)
 
+    except:
+        logger.error("An Error accured ... ")
+        time.sleep(3)
+        continue
 
-if __name__ == '__main__':
-    run()
+# At least close MQTT Connection
+logger.info("Script stopped")
+publish("$state", "disconnected")
+time.sleep(1)
+client.disconnect()
+client.loop_stop()
