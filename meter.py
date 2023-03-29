@@ -2,11 +2,14 @@
 # -*- coding: utf-8 -*-
 # import argparse
 import configparser
+import csv
 import json
 import logging
+import os
 import random
 import time
 
+#import config as cfg
 from gpiozero import Button
 from paho.mqtt import client as mqtt_client
 
@@ -20,9 +23,14 @@ console.setFormatter(formatter)
 logger.addHandler(console)
 
 
-IMP = 0.01
 latest = "gas.json"
 
+IMP = 0.01
+history = {
+    'impulses':[],
+    'daily':0,
+    'total':0
+    }
 
 # generate client ID with pub prefix randomly
 client_id = f'python-mqtt-{random.randint(0, 1000)}'
@@ -53,12 +61,10 @@ homieversion = mqtt.get('homieversion', 4.0)
 
 # GPIO
 gpio = app.getint('gpio', '')
-reed = Button(gpio)
+REED = Button(gpio)
 
-# we only have on node, thus it is identical to nodes
-node = "reed"
-properties = "counter"
-
+TIME_FORMAT = '%Y-%m-%dT%H:%M:%S'
+NODE = "gascounter"
 
 def read_latest():
     """Get latest value from json file"""
@@ -66,17 +72,54 @@ def read_latest():
         f = open(latest, "r")
         data = json.load(f)
         f.close()
-        return data['volume']
+        return float(data['volume'])
     except:
         return 0
   
 
-def write_latest(log):
+def write_latest(measurement):
     """Save latest value to json file"""
+    log = {
+        "date": time.strftime(TIME_FORMAT),
+        "volume" : measurement
+        }
+    logger.info(f"write {measurement}")
     f = open(latest, "w")
-    f.write(log)
+    f.write(json.dumps(log))
     f.close()
 
+def log_data(measurement):
+    log = {
+        "date": time.strftime(TIME_FORMAT),
+        "volume" : measurement
+        }
+    year = time.strftime("%Y")
+    month = time.strftime("%m")
+    day = time.strftime("%d")
+    #csv_daily = "%s%s%s.csv" % (year, month, day) 
+    csv_daily = f"{year}{month}{day}.csv"  
+    log_dir = os.path.join("log", year, month)
+    if not os.path.isdir(log_dir):
+        os.makedirs(log_dir)
+    csv_file = os.path.join(log_dir, csv_daily)
+    # add header only when we start a new file on new day
+    add_header = False
+    if not os.path.isfile(csv_file):
+        add_header = True
+    with open(csv_file, 'a', newline='') as csvfile:
+        fieldnames = log.keys()
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        if add_header is True:
+            writer.writeheader()
+        writer.writerow(log)
+    return 3
+
+def keep_history(impulse, daily, total):
+    history['impulses'].append(impulse)
+    history['daily'] = daily
+    history['total'] = total
+    print(history)
+    
 
 def publish(topic, payload):
     client.publish("homie/" + id + "/" + topic, payload, qos, retain_message)
@@ -95,12 +138,14 @@ def on_connect(client, userdata, flags, rc):
     publish("$name", name)
     publish("$nodes", nodes)
     # homie node config
-    publish('/'.join([node, "$name"]), "Reed contact")
-    publish('/'.join([node, "$properties"]), properties)
-    publish('/'.join([node, "counter", "$name"]), "Counter Reading")
-    publish('/'.join([node, "counter", "$unit"]), "m³")
-    publish('/'.join([node, "counter", "$datatype"]), "float")
-    publish('/'.join([node, "counter", "$settable"]), "true")
+    
+    properties = "reading, daily, weekly, monthly"
+    publish('/'.join([NODE, "$name"]), "Reed contact")
+    publish('/'.join([NODE, "$properties"]), properties)
+    publish('/'.join([NODE, "reading", "$name"]), "Counter Reading")
+    publish('/'.join([NODE, "reading", "$unit"]), "m³")
+    publish('/'.join([NODE, "reading", "$datatype"]), "float")
+    publish('/'.join([NODE, "reading", "$settable"]), "true")
     # homie state ready
     publish("$state", "ready")
 
@@ -108,10 +153,6 @@ def on_connect(client, userdata, flags, rc):
 def on_disconnect(client, userdata, rc):
     logger.info(f"MQTT Connection disconnected, Returned code={rc}")
 
-
-def sensorpublish():
-    publish(node + "/counter", "{:.1f}".format(counter))
-  
 
 # MQTT Connection
 mqttattempts = 0
@@ -125,12 +166,15 @@ while mqttattempts < mqttretry:
         client.connect(broker, port)
         client.loop_start()
         mqttattempts = mqttretry
-    except:
+    except Exception as error:
+        # Possible errors
+        # [Errno 113] No route to host
+        # [Errno 111] Connection refuse
         wait = 5
-        logger.info(f"Could not establish MQTT Connection! Try again {mqttretry - mqttattempts}x times after {wait}s")
+        logger.info(f"Could not connect to  MQTT Broker: {error}! Trying again in {mqttretry - mqttattempts}x times after {wait}s")
         mqttattempts += 1
         if mqttattempts == mqttretry:
-            logger.info("Could not connect to MQTT Broker! exit...")
+            logger.info("Could not connect to MQTT Broker! Giving up.")
             exit(0)
         time.sleep(wait)
 
@@ -146,20 +190,24 @@ def closed():
 
     latest_measurement = read_latest()
     latest_measurement += 1 * 0.01
-    consumption = round(latest_measurement, 3)
-
-    measurement = {"volume": consumption}
+    readout = round(latest_measurement, 3)
+    write_latest(readout)
+    daily = log_data(readout)
+    print(daily)
+    #now = time.strftime(TIME_FORMAT)
+    #impulses = history["impulses"]
+    #if len(impulses) > 0:
+    #    print(impulses[-1])
+    #print(time.strftime("%w"))
+    #keep_history(now, readout, readout)
+        
+    publish(NODE + "/reading", "{:.2f}".format(readout))
     
-    log = json.dumps(measurement)
-    write_latest(log)
-
-    publish(node + "/counter", "{:.2f}".format(consumption))
-    logger.info(consumption)
 
 # finaly the loop
 while True:
     try:
-        reed.when_pressed = closed
+        REED.when_pressed = closed
         time.sleep(0.1)
     except KeyboardInterrupt:
         logger.info("Goodbye!")
@@ -171,7 +219,7 @@ while True:
         exit(0)
 
     except:
-        logger.error("An Error accured ... ")
+        logger.error("An Error occured ... ")
         time.sleep(3)
         continue
 
