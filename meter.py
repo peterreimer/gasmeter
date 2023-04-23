@@ -9,7 +9,6 @@ import os
 import random
 import time
 
-#import config as cfg
 from gpiozero import Button
 from paho.mqtt import client as mqtt_client
 
@@ -21,7 +20,6 @@ console = logging.StreamHandler()
 formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
 console.setFormatter(formatter)
 logger.addHandler(console)
-
 
 latest = "gas.json"
 
@@ -41,7 +39,11 @@ config.read(config_file)
 
 app = config['app']
 gpio = app.getint('gpio', '')
-logger.info(f"GPIO {gpio}")
+brennwert =  app.getfloat('brennwert', 10.0)
+zustandszahl = app.getfloat('zustandszahl', 1.0)
+logger.info(f"Brennwert: {brennwert}")
+logger.info(f"Zustandszahl: {zustandszahl}")
+logger.info(f"GPIO:  {gpio}")
 
 # get MQTT settings
 mqtt = config['mqtt']
@@ -49,7 +51,6 @@ broker = mqtt.get('broker', '127.0.0.1')
 port = mqtt.getint('port', 1883)
 id = mqtt.get('id', '')
 name = mqtt.get('name', '')
-nodes = mqtt.get('nodes', '')
 username = mqtt.get('username', '')
 password = mqtt.get('password', '')
 insecure = mqtt.getboolean('insecure', True)
@@ -58,13 +59,13 @@ retain_message = mqtt.getboolean('retain_message', True)
 mqttretry = mqtt.getint('mqttretry', 2)
 publishtime = mqtt.getint('publishtime', 600)
 homieversion = mqtt.get('homieversion', 4.0)
+logger.info(f"QoS:  {qos}")
 
 # GPIO
 gpio = app.getint('gpio', '')
 REED = Button(gpio)
 
 TIME_FORMAT = '%Y-%m-%dT%H:%M:%S'
-NODE = "gascounter"
 
 def read_latest():
     """Get latest value from json file"""
@@ -72,53 +73,75 @@ def read_latest():
         f = open(latest, "r")
         data = json.load(f)
         f.close()
-        return float(data['volume'])
+        return float(data['total']), float(data['daily'])
     except:
-        return 0
+        return 0, 0
   
 
-def write_latest(measurement):
+def write_latest(total, daily):
     """Save latest value to json file"""
     log = {
         "date": time.strftime(TIME_FORMAT),
-        "volume" : measurement
+        "total" : total,
+        "daily" : daily
         }
-    logger.info(f"write {measurement}")
     f = open(latest, "w")
     f.write(json.dumps(log))
     f.close()
 
-def log_data(measurement):
-    log = {
-        "date": time.strftime(TIME_FORMAT),
-        "volume" : measurement
-        }
+def log_data():
+    """Calculate and return current reading and consumption"""
+
+    # setting up log file
     year = time.strftime("%Y")
     month = time.strftime("%m")
     day = time.strftime("%d")
-    #csv_daily = "%s%s%s.csv" % (year, month, day) 
     csv_daily = f"{year}{month}{day}.csv"  
     log_dir = os.path.join("log", year, month)
     if not os.path.isdir(log_dir):
         os.makedirs(log_dir)
     csv_file = os.path.join(log_dir, csv_daily)
-    # add header only when we start a new file on new day
-    add_header = False
     if not os.path.isfile(csv_file):
+        new_day = True
+    else:
+        new_day = False
+
+    # total counter
+    total, daily = read_latest()
+    if new_day:
+        daily = 0.0
+    total += 1 * IMP
+    total = round(total, 3)
+    daily += 1 * IMP * brennwert * zustandszahl
+    
+    daily = round(daily, 3)
+    write_latest(total, daily)
+
+    log = {
+        "date": time.strftime(TIME_FORMAT),
+        "total" : total,
+        "daily" : daily
+        }
+    
+    # add header only when we start a new file on new day
+    
+    if new_day:
         add_header = True
+    else:
+        add_header = False
+
     with open(csv_file, 'a', newline='') as csvfile:
         fieldnames = log.keys()
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         if add_header is True:
             writer.writeheader()
         writer.writerow(log)
-    return 3
+    return total, daily
 
 def keep_history(impulse, daily, total):
     history['impulses'].append(impulse)
     history['daily'] = daily
     history['total'] = total
-    print(history)
     
 
 def publish(topic, payload):
@@ -136,16 +159,19 @@ def on_connect(client, userdata, flags, rc):
     publish("$state", "init")
     publish("$homie", homieversion)
     publish("$name", name)
-    publish("$nodes", nodes)
+    publish("$nodes", "gasmeter")
     # homie node config
-    
-    properties = "reading, daily, weekly, monthly"
-    publish('/'.join([NODE, "$name"]), "Reed contact")
-    publish('/'.join([NODE, "$properties"]), properties)
-    publish('/'.join([NODE, "reading", "$name"]), "Counter Reading")
-    publish('/'.join([NODE, "reading", "$unit"]), "m³")
-    publish('/'.join([NODE, "reading", "$datatype"]), "float")
-    publish('/'.join([NODE, "reading", "$settable"]), "true")
+    node = "gasmeter"
+    properties = "total,daily"
+    publish('/'.join([node, "$name"]), "Reed contact")
+    publish('/'.join([node, "$properties"]), properties)
+    publish('/'.join([node, "total", "$name"]), "Counter Reading")
+    publish('/'.join([node, "total", "$unit"]), "m³")
+    publish('/'.join([node, "total", "$datatype"]), "float")
+    publish('/'.join([node, "total", "$settable"]), "true")
+    publish('/'.join([node, "daily", "$name"]), "Daily Consumption")
+    publish('/'.join([node, "daily", "$unit"]), "kWh")
+    publish('/'.join([node, "daily", "$datatype"]), "float")
     # homie state ready
     publish("$state", "ready")
 
@@ -187,21 +213,11 @@ client.on_disconnect = on_disconnect
 
 def closed():
     """Increase the consumption value for each closing of the reed contact"""
-
-    latest_measurement = read_latest()
-    latest_measurement += 1 * 0.01
-    readout = round(latest_measurement, 3)
-    write_latest(readout)
-    daily = log_data(readout)
-    print(daily)
-    #now = time.strftime(TIME_FORMAT)
-    #impulses = history["impulses"]
-    #if len(impulses) > 0:
-    #    print(impulses[-1])
-    #print(time.strftime("%w"))
-    #keep_history(now, readout, readout)
-        
-    publish(NODE + "/reading", "{:.2f}".format(readout))
+    total, daily = log_data()
+    logger.info(f"total: {total}, daily {daily}")
+    node = "gasmeter"    
+    publish(node + "/total", "{:.2f}".format(total))
+    publish(node + "/daily", "{:.3f}".format(daily))
     
 
 # finaly the loop
