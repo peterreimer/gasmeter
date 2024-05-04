@@ -3,14 +3,11 @@
 import argparse
 import configparser
 import csv
-import csv
 import json
 import logging
 import os
-import os
 import random
 import time
-
 
 from gpiozero import Button
 from paho.mqtt import client as mqtt_client
@@ -233,7 +230,6 @@ while mqttattempts < mqttretry:
         logger.info(f"Could not connect to  MQTT Broker: {error}! Trying again in {mqttretry - mqttattempts}x times after {wait}s")
         mqttattempts += 1
         if mqttattempts == mqttretry:
-            logger.info("Could not connect to MQTT Broker! Giving up.")
             logger.info("Could not connect to MQTT Broker! Giving up.")
             exit(0)
         time.sleep(wait)
