@@ -3,8 +3,10 @@
 import argparse
 import configparser
 import csv
+import csv
 import json
 import logging
+import os
 import os
 import random
 import time
@@ -92,10 +94,15 @@ def read_latest():
         return float(data['total']), float(data['daily'])
     except:
         return 0, 0
-  
+
 
 def write_latest(total, daily):
     """Save latest value to json file"""
+    log = {
+        "date": time.strftime(TIME_FORMAT),
+        "total" : total,
+        "daily" : daily
+        }
     log = {
         "date": time.strftime(TIME_FORMAT),
         "total" : total,
@@ -176,11 +183,21 @@ def on_connect(client, userdata, flags, rc):
     publish("$homie", homieversion)
     publish("$name", name)
     publish("$nodes", "gasmeter")
+    publish("$nodes", "gasmeter")
     # homie node config
+    node = "gasmeter"
+    properties = "total,daily"
     node = "gasmeter"
     properties = "total,daily"
     publish('/'.join([node, "$name"]), "Reed contact")
     publish('/'.join([node, "$properties"]), properties)
+    publish('/'.join([node, "total", "$name"]), "Counter Reading")
+    publish('/'.join([node, "total", "$unit"]), "m³")
+    publish('/'.join([node, "total", "$datatype"]), "float")
+    publish('/'.join([node, "total", "$settable"]), "true")
+    publish('/'.join([node, "daily", "$name"]), "Daily Consumption")
+    publish('/'.join([node, "daily", "$unit"]), "kWh")
+    publish('/'.join([node, "daily", "$datatype"]), "float")
     publish('/'.join([node, "total", "$name"]), "Counter Reading")
     publish('/'.join([node, "total", "$unit"]), "m³")
     publish('/'.join([node, "total", "$datatype"]), "float")
@@ -216,6 +233,7 @@ while mqttattempts < mqttretry:
         logger.info(f"Could not connect to  MQTT Broker: {error}! Trying again in {mqttretry - mqttattempts}x times after {wait}s")
         mqttattempts += 1
         if mqttattempts == mqttretry:
+            logger.info("Could not connect to MQTT Broker! Giving up.")
             logger.info("Could not connect to MQTT Broker! Giving up.")
             exit(0)
         time.sleep(wait)

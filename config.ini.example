@@ -1,6 +1,8 @@
 [app]
 gpio = 27
 impulse = 0.01
+brennwert = 10.355
+zustandszahl = 0.9690
 
 [mqtt]
 id = raspi
@@ -8,8 +10,6 @@ name = raspi with several sensors
 homieversion = 4.0
 broker = localhost
 port = 1883
-# exposed nodes, separated by ","" for multiple ones
-nodes = reed
 username = mosqitto
 password = *****
 insecure = True
